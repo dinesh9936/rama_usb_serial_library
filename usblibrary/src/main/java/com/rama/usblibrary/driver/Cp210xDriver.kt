@@ -5,6 +5,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
+import android.util.Log
 import com.rama.usblibrary.UsbSerialPort
 
 class Cp210xDriver(
@@ -30,13 +31,9 @@ class Cp210xDriver(
     private var mWriteEndpoint: UsbEndpoint? = null
 
     override fun open() {
-        // 1. Get the interface (CP210x is usually at 0)
         mInterface = device.getInterface(0)
-
-        // 2. Claim and force detach kernel
         connection.claimInterface(mInterface, true)
 
-        // 3. Find Bulk Endpoints
         for (i in 0 until mInterface!!.endpointCount) {
             val ep = mInterface!!.getEndpoint(i)
             if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
@@ -45,10 +42,19 @@ class Cp210xDriver(
             }
         }
 
-        // 4. Initialize Hardware
+        if (mReadEndpoint == null || mWriteEndpoint == null) {
+            throw IllegalStateException("Endpoints not found")
+        }
+
+        // Enable UART
         connection.controlTransfer(REQTYPE_HOST_TO_DEVICE, CP210X_IFC_ENABLE, UART_ENABLE, 0, null, 0, 1000)
-        // Set DTR/RTS high to allow data flow
+
+        // Enable DTR + RTS
         connection.controlTransfer(REQTYPE_HOST_TO_DEVICE, CP210X_MHS_CONTROL, CONTROL_DTR or CONTROL_RTS, 0, null, 0, 1000)
+
+        // 🔥 CRITICAL FIXES
+        connection.controlTransfer(REQTYPE_HOST_TO_DEVICE, 0x07, 0x000F, 0, null, 0, 1000) // PURGE
+        connection.controlTransfer(REQTYPE_HOST_TO_DEVICE, 0x13, 0, 0, null, 0, 1000) // FLOW OFF
     }
 
     override fun setParameters(baudRate: Int, dataBits: Int, stopBits: Int, parity: Int) {
@@ -67,8 +73,16 @@ class Cp210xDriver(
         connection.controlTransfer(REQTYPE_HOST_TO_DEVICE, CP210X_SET_LINE_CTL, config, 0, null, 0, 1000)
     }
 
-    override fun write(data: ByteArray, timeout: Int) {
-        connection.bulkTransfer(mWriteEndpoint, data, data.size, timeout)
+
+
+    override fun write(data: ByteArray, timeout: Int): Int { // Add : Int
+        return writeRaw(data, timeout)
+    }
+
+    private fun writeRaw(data: ByteArray, timeout: Int): Int {
+        val result = connection.bulkTransfer(mWriteEndpoint, data, data.size, timeout)
+        Log.d("USB_LIB", "bulkTransfer out: $result")
+        return result
     }
 
     fun read(buffer: ByteArray, timeout: Int): Int {

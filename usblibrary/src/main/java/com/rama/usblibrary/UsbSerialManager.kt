@@ -7,18 +7,27 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.rama.usblibrary.common.SerialConfig
 import com.rama.usblibrary.driver.Cp210xDriver
 import com.rama.usblibrary.driver.ProbeTable
 import com.rama.usblibrary.manager.UsbPermissionManager
 import com.rama.usblibrary.util.UsbSerialReader
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 
 class UsbSerialManager(private val context: Context) {
+
+    companion object{
+        const val ACTION_USB_PERMISSION = "com.example.usbserial.USB_PERMISSION"
+    }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val probeTable = ProbeTable()
@@ -26,22 +35,15 @@ class UsbSerialManager(private val context: Context) {
     private var driver: Cp210xDriver? = null
     private var reader: UsbSerialReader? = null
 
-    private val ACTION_USB_PERMISSION = "com.example.usbserial.USB_PERMISSION"
-
-    // ⭐ Useful: State tracking
     var isConnected: Boolean = false
         private set
 
-    // Callback for the UI to know when the device was pulled out
     var onDeviceDetached: (() -> Unit)? = null
 
     fun findSupportedDevice(): UsbDevice? {
         return usbManager.deviceList.values.find { probeTable.isSupported(it) }
     }
 
-    /**
-     * ⭐ NEW: Receiver to detect physical unplugging
-     */
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (UsbManager.ACTION_USB_DEVICE_DETACHED == intent.action) {
@@ -55,17 +57,13 @@ class UsbSerialManager(private val context: Context) {
         }
     }
 
-    /**
-     * ⭐ NEW: Register the listener (Call this in your Activity's onStart or onCreate)
-     */
+
     fun registerDetachReceiver() {
         val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
         context.registerReceiver(detachReceiver, filter)
     }
 
-    /**
-     * ⭐ NEW: Unregister to avoid memory leaks (Call this in onStop or onDestroy)
-     */
+
     fun unregisterDetachReceiver() {
         try {
             context.unregisterReceiver(detachReceiver)
@@ -76,25 +74,19 @@ class UsbSerialManager(private val context: Context) {
 
 
 
-    /**
-     * ⭐ NEW: Get a specific UsbDevice by VID/PID
-     */
+
     fun getDevice(vendorId: Int = 0x10C4, productId: Int = 0xEA60): UsbDevice? {
         return usbManager.deviceList.values.find {
             it.vendorId == vendorId && it.productId == productId
         }
     }
 
-    /**
-     * ⭐ NEW: Check if the app already has permission for a device
-     */
+
     fun hasPermission(device: UsbDevice): Boolean {
         return usbManager.hasPermission(device)
     }
 
-    /**
-     * ⭐ NEW: Manually request permission with a callback
-     */
+
     fun requestPermission(device: UsbDevice, onResult: (Boolean) -> Unit) {
         if (hasPermission(device)) {
             onResult(true)
@@ -130,15 +122,10 @@ class UsbSerialManager(private val context: Context) {
         usbManager.requestPermission(device, permissionIntent)
     }
 
-    /**
-     * ⭐ Useful: Get the data stream directly from the manager
-     */
-    val dataStream: SharedFlow<ByteArray>?
-        get() = reader?.dataFlow
 
-    /**
-     * Connects to the device and handles all setup internally
-     */
+    private val _dataStream = MutableSharedFlow<ByteArray>(replay = 1)
+    val dataStream: SharedFlow<ByteArray> = _dataStream
+
     fun connect(
         config: SerialConfig,
         onError: (String) -> Unit = {},
@@ -147,9 +134,11 @@ class UsbSerialManager(private val context: Context) {
         val device = findSupportedDevice()
 
         if (device == null) {
-            onError("No supported CP210x device found.")
+            onError.invoke("No supported CP210x device found.")
             return
         }
+
+
 
         UsbPermissionManager(context).requestPermission(device) { granted ->
             if (granted) {
@@ -166,7 +155,16 @@ class UsbSerialManager(private val context: Context) {
 
                     reader = UsbSerialReader(driver!!).apply {
                         startReading()
+
+                        // 🔥 Forward data to manager flow
+                        CoroutineScope(Dispatchers.IO).launch {
+                            dataFlow.collect { data ->
+                                //Log.d("USB_MANAGER", "Forwarding: $data")
+                                _dataStream.emit(data)
+                            }
+                        }
                     }
+
 
                     isConnected = true
                     onConnected()
@@ -180,10 +178,6 @@ class UsbSerialManager(private val context: Context) {
     }
 
 
-    /**
-     * Executes a list of commands sequentially.
-     * Each command waits for the previous one to finish before starting.
-     */
     suspend fun executeBatchCommands(
         commands: List<String>,
         delayBetween: Long = 100,
@@ -214,7 +208,7 @@ class UsbSerialManager(private val context: Context) {
 
         // 3. Wait for the next emission from the dataStream flow
         return withTimeoutOrNull(timeout) {
-            dataStream?.first()?.let { String(it) }
+            String(dataStream.first())
         }
     }
 
@@ -222,7 +216,14 @@ class UsbSerialManager(private val context: Context) {
      * ⭐ Useful: Send string data directly
      */
     fun write(data: String, timeout: Int = 1000) {
-        write(data.toByteArray(), timeout)
+
+
+        val data = byteArrayOf(0x4D, 0x30, 0x0D, 0x0A)
+        Log.d("USB_LIB", "Writing String: $data")
+       // val bytes = data.toByteArray(Charsets.UTF_8)
+       // Log.d("USB_LIB", "Writing Bytes: ${bytes.joinToString(",") { "0x%02X".format(it) }}")
+        val result = write(data, timeout)
+        Log.d("USB_LIB", "Bytes actually written: $result")
     }
 
     /**

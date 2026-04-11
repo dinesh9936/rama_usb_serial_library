@@ -1,5 +1,6 @@
 package com.rama.usblibrary.util
 
+import android.util.Log
 import com.rama.usblibrary.driver.Cp210xDriver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,17 +23,18 @@ class UsbSerialReader(private val driver: Cp210xDriver) {
 
     fun startReading() {
         isReading = true
+
         scope.launch {
             val buffer = ByteArray(1024)
+
             while (isActive && isReading) {
-                // Read from the driver
-                val len = driver.read(buffer, 100) // 100ms timeout
+
+                val len = driver.read(buffer, 200)
+
                 if (len > 0) {
-                    val receivedData = buffer.copyOf(len)
-                    _dataFlow.emit(receivedData)
+                    val data = buffer.copyOf(len)
+                    _dataFlow.emit(data)
                 }
-                // Small delay to prevent CPU spiking if no data is present
-                yield()
             }
         }
     }

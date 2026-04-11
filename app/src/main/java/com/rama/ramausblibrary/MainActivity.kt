@@ -1,47 +1,51 @@
 package com.rama.ramausblibrary
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
-import com.rama.ramausblibrary.ui.theme.RamaUsbLibraryTheme
+import androidx.compose.ui.unit.dp
+import com.rama.usblibrary.UsbSerialManager
+import com.rama.usblibrary.common.SerialConfig
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var usbManager: UsbSerialManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContent {
-            RamaUsbLibraryTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
+
+        usbManager = UsbSerialManager(this)
+
+        usbManager.onDeviceDetached = {
+            runOnUiThread {
+                Toast.makeText(this, "USB Disconnected", Toast.LENGTH_SHORT).show()
             }
         }
+
+
+
+        setContent {
+            UsbScreen(usbManager)
+        }
     }
-}
 
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
+    override fun onStart() {
+        super.onStart()
+        usbManager.registerDetachReceiver()
+    }
 
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    RamaUsbLibraryTheme {
-        Greeting("Android")
+    override fun onStop() {
+        super.onStop()
+        usbManager.unregisterDetachReceiver()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        usbManager.disconnect()
     }
 }
